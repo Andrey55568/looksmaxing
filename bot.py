@@ -5,7 +5,7 @@ import random
 from datetime import datetime, timedelta
 from PIL import Image, ImageStat
 from aiogram import Bot, Dispatcher, types, F
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, BotCommand, BotCommandScopeDefault
+from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, BotCommand, BotCommandScopeDefault
 from aiogram.filters import Command
 from aiogram.enums import ParseMode
 from aiogram.client.default import DefaultBotProperties
@@ -52,17 +52,6 @@ def init_db():
         strengths TEXT,
         improvements TEXT,
         confidence TEXT,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    )''')
-    c.execute('''CREATE TABLE IF NOT EXISTS battles (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id INTEGER,
-        photo1_id TEXT,
-        photo2_id TEXT,
-        verdict1 TEXT,
-        verdict2 TEXT,
-        winner TEXT,
-        reason TEXT,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )''')
     conn.commit()
@@ -231,15 +220,26 @@ def analyze_photo(image_data):
             img = img.convert('RGB')
         img.thumbnail((800, 800), Image.Resampling.LANCZOS)
         brightness = ImageStat.Stat(img).mean[0]
+        contrast = ImageStat.Stat(img).std[0]
         random.seed(int(brightness * 100))
-        verdicts = ["LTN", "MTN", "HTN"]
-        verdict = random.choice(verdicts)
+        
+        if brightness > 180 and contrast > 60:
+            verdict = random.choice(["Chad", "True Adam"])
+        elif brightness > 140:
+            verdict = random.choice(["HTN", "Chadlite"])
+        elif brightness > 100:
+            verdict = random.choice(["MTN", "HTN"])
+        elif brightness > 60:
+            verdict = random.choice(["LTN", "MTN"])
+        else:
+            verdict = random.choice(["Sub5", "LTN"])
+        
         return {
             "verdict": verdict,
-            "observation": f"⭐ Яркость: {int(brightness)}/255",
-            "strengths": "✅ Хорошее качество" if brightness > 80 else "📷 Среднее качество",
-            "improvements": "💡 Улучшите освещение" if brightness < 60 else "🔄 Можно другой ракурс",
-            "confidence": "🔥 Высокая" if brightness > 100 else "📊 Средняя"
+            "observation": f"⭐ Яркость: {int(brightness)}/255, Контраст: {int(contrast)}",
+            "strengths": "✅ Отличное фото" if brightness > 150 else "📷 Хорошее фото",
+            "improvements": "💡 Улучшите освещение" if brightness < 80 else "🔄 Можно другой ракурс",
+            "confidence": "🔥 Высокая" if brightness > 120 else "📊 Средняя"
         }
     except:
         return {
@@ -250,22 +250,23 @@ def analyze_photo(image_data):
             "confidence": "Низкая"
         }
 
+# ==================== ПОСТОЯННАЯ КЛАВИАТУРА (НИЖНЯЯ ПАНЕЛЬ) ====================
+def get_main_keyboard(role="user"):
+    keyboard = [
+        [KeyboardButton(text="📸 Оценить"), KeyboardButton(text="⚔️ Батл")],
+        [KeyboardButton(text="💎 Подписки"), KeyboardButton(text="🎫 Промокод")],
+        [KeyboardButton(text="📊 Статистика")]
+    ]
+    if role == "owner":
+        keyboard.append([KeyboardButton(text="⚙️ Админ-панель")])
+    return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
+
 # ==================== БОТ ====================
 bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher()
-user_photos = {}
 
-# ==================== ПОСТОЯННОЕ МЕНЮ (БОКОВАЯ ПАНЕЛЬ) ====================
-async def set_commands():
-    commands = [
-        BotCommand(command="start", description="🏠 Главное меню"),
-        BotCommand(command="rate", description="📸 Оценить фото"),
-        BotCommand(command="battle", description="⚔️ Батл (2 фото)"),
-        BotCommand(command="promo", description="🎫 Активировать промокод"),
-        BotCommand(command="stats", description="📊 Моя статистика"),
-        BotCommand(command="subscriptions", description="💎 Подписки"),
-    ]
-    await bot.set_my_commands(commands, scope=BotCommandScopeDefault())
+# Хранилище для батлов
+user_photos_battle = {}
 
 # ==================== ПРОВЕРКА ПОДПИСКИ ====================
 async def check_subscription(user_id):
@@ -275,7 +276,7 @@ async def check_subscription(user_id):
     except:
         return False
 
-# ==================== ГЛАВНОЕ МЕНЮ ====================
+# ==================== /START ====================
 @dp.message(Command("start"))
 async def start_cmd(message: types.Message):
     user = get_or_create_user(
@@ -285,10 +286,10 @@ async def start_cmd(message: types.Message):
     )
     
     if not await check_subscription(message.from_user.id):
-        kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="📢 Подписаться", url="https://t.me/KennyChadPSL")],
-            [InlineKeyboardButton(text="🔄 Проверить", callback_data="check_sub")]
-        ])
+        kb = ReplyKeyboardMarkup(
+            keyboard=[[KeyboardButton(text="📢 Подписаться", url="https://t.me/KennyChadPSL")]],
+            resize_keyboard=True
+        )
         await message.answer(
             "🔒 <b>ТРЕБУЕТСЯ ПОДПИСКА!</b>\n\n"
             "Подпишись на канал, чтобы использовать бота:\n"
@@ -308,50 +309,40 @@ async def show_menu(message):
     sub = user[5]
     role = user[4]
     
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📸 Оценить фото", callback_data="rate")],
-        [InlineKeyboardButton(text="⚔️ Батл", callback_data="battle")],
-        [InlineKeyboardButton(text="💎 Подписки", callback_data="subscriptions")],
-        [InlineKeyboardButton(text="🎫 Промокод", callback_data="promo")],
-        [InlineKeyboardButton(text="📊 Статистика", callback_data="stats")]
-    ])
-    
-    admin_text = ""
-    if role == "owner":
-        kb.inline_keyboard.append([InlineKeyboardButton(text="⚙️ Админ-панель", callback_data="admin")])
-        admin_text = "\n👑 <b>ВЫ ВЛАДЕЛЕЦ — ВСЁ БЕСПЛАТНО!</b>"
-    
     await message.answer(
         f"🏠 <b>ГЛАВНОЕ МЕНЮ</b>\n"
         f"━━━━━━━━━━━━━━━\n"
         f"⭐ Бесплатно: <b>{free}</b>\n"
         f"📅 Подписка: <b>{sub.upper() if sub != 'none' else 'Нет'}</b>\n"
-        f"{admin_text}\n"
         f"━━━━━━━━━━━━━━━\n"
-        f"👇 <i>Выбери действие:</i>",
-        reply_markup=kb
+        f"👇 <i>Выбери действие на панели внизу</i>",
+        reply_markup=get_main_keyboard(role)
     )
 
-# ==================== ПРОВЕРКА ПОДПИСКИ ====================
-@dp.callback_query(F.data == "check_sub")
-async def check_sub_callback(callback: types.CallbackQuery):
-    if await check_subscription(callback.from_user.id):
-        await callback.message.delete()
-        await show_menu(callback.message)
-        await callback.answer("✅ Подписка подтверждена!", show_alert=True)
-    else:
-        await callback.answer("❌ Вы не подписаны!", show_alert=True)
+# ==================== КНОПКА "ОЦЕНИТЬ" ====================
+@dp.message(F.text == "📸 Оценить")
+async def rate_button(message: types.Message):
+    user = get_user(message.from_user.id)
+    if not user:
+        await message.answer("❌ /start")
+        return
+    
+    if not await check_subscription(message.from_user.id):
+        await message.answer("❌ Подпишись на @KennyChadPSL")
+        return
+    
+    can, msg = can_rate(message.from_user.id)
+    if not can:
+        await message.answer(msg)
+        return
+    
+    await message.answer(
+        "📸 <b>Отправь фото для оценки</b>\n\n"
+        "Я оценю его по шкале Looksmaxxing",
+        reply_markup=get_main_keyboard(user[4])
+    )
 
-# ==================== ОЦЕНКА ====================
-@dp.message(Command("rate"))
-@dp.callback_query(F.data == "rate")
-async def rate_callback(callback_or_message):
-    if isinstance(callback_or_message, types.CallbackQuery):
-        await callback_or_message.message.answer("📸 <b>Отправь фото для оценки</b>")
-        await callback_or_message.answer()
-    else:
-        await callback_or_message.answer("📸 <b>Отправь фото для оценки</b>")
-
+# ==================== ОБРАБОТКА ФОТО ====================
 @dp.message(F.photo)
 async def handle_photo(message: types.Message):
     user = get_user(message.from_user.id)
@@ -363,7 +354,8 @@ async def handle_photo(message: types.Message):
         await message.answer("❌ Подпишись на @KennyChadPSL")
         return
     
-    if message.from_user.id in user_photos and len(user_photos[message.from_user.id]) < 2:
+    # Проверяем, не батл ли это
+    if message.from_user.id in user_photos_battle:
         await handle_battle_photo(message)
         return
     
@@ -397,70 +389,79 @@ async def handle_photo(message: types.Message):
         f"👀 {result['observation']}\n"
         f"✅ {result['strengths']}\n"
         f"📈 {result['improvements']}\n"
-        f"📊 <b>Уверенность:</b> {result['confidence']}"
+        f"📊 <b>Уверенность:</b> {result['confidence']}",
+        reply_markup=get_main_keyboard(user[4])
     )
-    await show_menu(message)
 
 # ==================== БАТЛ ====================
-@dp.message(Command("battle"))
-@dp.callback_query(F.data == "battle")
-async def battle_callback(callback_or_message):
-    user_photos[callback_or_message.from_user.id] = []
-    if isinstance(callback_or_message, types.CallbackQuery):
-        await callback_or_message.message.answer("⚔️ <b>Отправь ДВА фото по очереди</b>")
-        await callback_or_message.answer()
-    else:
-        await callback_or_message.answer("⚔️ <b>Отправь ДВА фото по очереди</b>")
+@dp.message(F.text == "⚔️ Батл")
+async def battle_button(message: types.Message):
+    user = get_user(message.from_user.id)
+    if not user:
+        await message.answer("❌ /start")
+        return
+    
+    if not await check_subscription(message.from_user.id):
+        await message.answer("❌ Подпишись на @KennyChadPSL")
+        return
+    
+    can, msg = can_battle(message.from_user.id)
+    if not can:
+        await message.answer(msg)
+        return
+    
+    user_photos_battle[message.from_user.id] = []
+    await message.answer(
+        "⚔️ <b>БАТЛ</b>\n\n"
+        "Отправь <b>ДВА</b> фото по очереди.\n"
+        "Я сравню их и скажу, кто победил!",
+        reply_markup=get_main_keyboard(user[4])
+    )
 
 async def handle_battle_photo(message: types.Message):
     user_id = message.from_user.id
+    user = get_user(user_id)
     
-    if user_id not in user_photos:
-        user_photos[user_id] = []
+    if user_id not in user_photos_battle:
+        user_photos_battle[user_id] = []
     
-    if len(user_photos[user_id]) >= 2:
+    if len(user_photos_battle[user_id]) >= 2:
         return
     
     photo = message.photo[-1]
     file = await bot.get_file(photo.file_id)
     image_data = await bot.download_file(file.file_path)
     image_bytes = image_data.getvalue()
-    user_photos[user_id].append(image_bytes)
+    user_photos_battle[user_id].append(image_bytes)
     
-    if len(user_photos[user_id]) == 1:
+    if len(user_photos_battle[user_id]) == 1:
         await message.answer("📸 <b>Фото 1 сохранено!</b> Теперь отправь <b>второе</b>")
-    elif len(user_photos[user_id]) == 2:
-        can, msg = can_battle(user_id)
-        if not can:
-            await message.answer(msg)
-            del user_photos[user_id]
-            return
-        
-        img1 = user_photos[user_id][0]
-        img2 = user_photos[user_id][1]
+    elif len(user_photos_battle[user_id]) == 2:
+        img1 = user_photos_battle[user_id][0]
+        img2 = user_photos_battle[user_id][1]
         result1 = analyze_photo(img1)
         result2 = analyze_photo(img2)
         
-        score_map = {"LTN": 1, "MTN": 2, "HTN": 3}
-        score1 = score_map.get(result1["verdict"], 1)
-        score2 = score_map.get(result2["verdict"], 1)
+        score_map = {"Sub5": 0, "LTN": 1, "MTN": 2, "HTN": 3, "Chadlite": 4, "Chad": 5, "True Adam": 6}
+        score1 = score_map.get(result1["verdict"], 2)
+        score2 = score_map.get(result2["verdict"], 2)
         
         if score1 > score2:
-            winner = "🏆 Фото 1"
+            winner = "🏆 <b>Фото 1</b>"
             reason = f"{result1['verdict']} > {result2['verdict']}"
         elif score2 > score1:
-            winner = "🏆 Фото 2"
+            winner = "🏆 <b>Фото 2</b>"
             reason = f"{result2['verdict']} > {result1['verdict']}"
         else:
-            winner = "🤝 Ничья"
-            reason = "Одинаковые оценки"
+            winner = "🤝 <b>Ничья</b>"
+            reason = "Одинаковые оценки!"
         
         save_battle(user_id, "photo1", "photo2", result1["verdict"], result2["verdict"], winner, reason)
         
         if can != "owner":
             increment_usage(user_id, "battle")
         
-        del user_photos[user_id]
+        del user_photos_battle[user_id]
         
         await message.answer(
             f"⚔️ <b>РЕЗУЛЬТАТ БАТЛА</b>\n"
@@ -469,22 +470,26 @@ async def handle_battle_photo(message: types.Message):
             f"📸 Фото 2: <code>{result2['verdict']}</code>\n"
             f"━━━━━━━━━━━━━━━\n"
             f"{winner}\n"
-            f"💬 {reason}"
+            f"💬 {reason}",
+            reply_markup=get_main_keyboard(user[4])
         )
-        await show_menu(message)
 
 # ==================== ПОДПИСКИ ====================
-@dp.message(Command("subscriptions"))
-@dp.callback_query(F.data == "subscriptions")
-async def subscriptions_callback(callback_or_message):
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🥉 Bronze — 100⭐", callback_data="buy_bronze")],
-        [InlineKeyboardButton(text="🥈 Silver — 200⭐", callback_data="buy_silver")],
-        [InlineKeyboardButton(text="🥇 Gold — 450⭐", callback_data="buy_gold")],
-        [InlineKeyboardButton(text="◀️ Назад", callback_data="back")]
-    ])
+@dp.message(F.text == "💎 Подписки")
+async def subscriptions_button(message: types.Message):
+    user = get_user(message.from_user.id)
+    if not user:
+        return
     
-    text = (
+    kb = ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="🥉 Bronze — 100⭐"), KeyboardButton(text="🥈 Silver — 200⭐")],
+            [KeyboardButton(text="🥇 Gold — 450⭐")]
+        ],
+        resize_keyboard=True
+    )
+    
+    await message.answer(
         "💎 <b>ТАРИФЫ</b>\n"
         "━━━━━━━━━━━━━━━\n"
         "🥉 <b>Bronze</b> — 100⭐/мес\n"
@@ -493,30 +498,48 @@ async def subscriptions_callback(callback_or_message):
         "   • 15 оценок в день\n"
         "   • 3 батла в день\n\n"
         "🥇 <b>Gold</b> — 450⭐/мес\n"
-        "   • Безлимит на всё"
+        "   • Безлимит на всё",
+        reply_markup=kb
     )
-    
-    if isinstance(callback_or_message, types.CallbackQuery):
-        await callback_or_message.message.edit_text(text, reply_markup=kb)
-        await callback_or_message.answer()
-    else:
-        await callback_or_message.answer(text, reply_markup=kb)
 
-@dp.callback_query(F.data.startswith("buy_"))
-async def buy_callback(callback: types.CallbackQuery):
-    plan = callback.data.split("_")[1]
-    prices = {"bronze": 100, "silver": 200, "gold": 450}
+@dp.message(F.text.startswith("🥉"))
+async def buy_bronze(message: types.Message):
     await bot.send_invoice(
-        chat_id=callback.message.chat.id,
-        title=f"{plan.capitalize()} Subscription",
-        description=f"Подписка {plan.capitalize()} на 30 дней",
-        payload=f"sub_{plan}",
+        chat_id=message.chat.id,
+        title="Bronze Subscription",
+        description="10 оценок в день на 30 дней",
+        payload="sub_bronze",
         provider_token="",
         currency="XTR",
-        prices=[{"label": plan.capitalize(), "amount": prices[plan]}],
+        prices=[{"label": "Bronze", "amount": 100}],
         start_parameter="subscription"
     )
-    await callback.answer()
+
+@dp.message(F.text.startswith("🥈"))
+async def buy_silver(message: types.Message):
+    await bot.send_invoice(
+        chat_id=message.chat.id,
+        title="Silver Subscription",
+        description="15 оценок + 3 батла в день на 30 дней",
+        payload="sub_silver",
+        provider_token="",
+        currency="XTR",
+        prices=[{"label": "Silver", "amount": 200}],
+        start_parameter="subscription"
+    )
+
+@dp.message(F.text.startswith("🥇"))
+async def buy_gold(message: types.Message):
+    await bot.send_invoice(
+        chat_id=message.chat.id,
+        title="Gold Subscription",
+        description="Безлимит на 30 дней",
+        payload="sub_gold",
+        provider_token="",
+        currency="XTR",
+        prices=[{"label": "Gold", "amount": 450}],
+        start_parameter="subscription"
+    )
 
 @dp.pre_checkout_query()
 async def pre_checkout(pre_checkout: types.PreCheckoutQuery):
@@ -532,15 +555,10 @@ async def payment_handler(message: types.Message):
         await message.answer(f"✅ Подписка <b>{plan.capitalize()}</b> активирована на 30 дней!")
     await show_menu(message)
 
-# ==================== ПРОМОКОДЫ (УПРОЩЁННО) ====================
-@dp.message(Command("promo"))
-@dp.callback_query(F.data == "promo")
-async def promo_callback(callback_or_message):
-    if isinstance(callback_or_message, types.CallbackQuery):
-        await callback_or_message.message.answer("🎫 <b>Введите промокод</b>\n\nПример: <code>SUMMER2024</code>")
-        await callback_or_message.answer()
-    else:
-        await callback_or_message.answer("🎫 <b>Введите промокод</b>\n\nПример: <code>SUMMER2024</code>")
+# ==================== ПРОМОКОД ====================
+@dp.message(F.text == "🎫 Промокод")
+async def promo_button(message: types.Message):
+    await message.answer("🎫 <b>Введите промокод</b>\n\nПример: <code>SUMMER2024</code>")
 
 @dp.message(F.text)
 async def handle_promo(message: types.Message):
@@ -578,15 +596,13 @@ async def handle_promo(message: types.Message):
         await show_menu(message)
 
 # ==================== СТАТИСТИКА ====================
-@dp.message(Command("stats"))
-@dp.callback_query(F.data == "stats")
-async def stats_callback(callback_or_message):
-    user = get_user(callback_or_message.from_user.id)
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="◀️ Назад", callback_data="back")]
-    ])
+@dp.message(F.text == "📊 Статистика")
+async def stats_button(message: types.Message):
+    user = get_user(message.from_user.id)
+    if not user:
+        return
     
-    text = (
+    await message.answer(
         f"📊 <b>МОЯ СТАТИСТИКА</b>\n"
         f"━━━━━━━━━━━━━━━\n"
         f"⭐ Бесплатно: <b>{user[7]}</b>\n"
@@ -597,25 +613,13 @@ async def stats_callback(callback_or_message):
         f"📈 Оценок сегодня: <b>{user[8]}/15</b>\n"
         f"⚔️ Батлов сегодня: <b>{user[9]}/3</b>"
     )
-    
-    if isinstance(callback_or_message, types.CallbackQuery):
-        await callback_or_message.message.edit_text(text, reply_markup=kb)
-        await callback_or_message.answer()
-    else:
-        await callback_or_message.answer(text, reply_markup=kb)
-
-@dp.callback_query(F.data == "back")
-async def back_callback(callback: types.CallbackQuery):
-    await callback.message.delete()
-    await show_menu(callback.message)
-    await callback.answer()
 
 # ==================== АДМИН-ПАНЕЛЬ ====================
-@dp.callback_query(F.data == "admin")
-async def admin_callback(callback: types.CallbackQuery):
-    user = get_user(callback.from_user.id)
+@dp.message(F.text == "⚙️ Админ-панель")
+async def admin_button(message: types.Message):
+    user = get_user(message.from_user.id)
     if user[4] != "owner":
-        await callback.answer("⛔ Доступ запрещён!", show_alert=True)
+        await message.answer("⛔ Доступ запрещён!")
         return
     
     total_users, total_ratings, total_battles = get_stats()
@@ -625,99 +629,21 @@ async def admin_callback(callback: types.CallbackQuery):
     if not codes_text:
         codes_text = "Нет активных промокодов"
     
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📊 Полная статистика", callback_data="admin_stats")],
-        [InlineKeyboardButton(text="🎫 Создать промокод", callback_data="admin_promo")],
-        [InlineKeyboardButton(text="📢 Рассылка", callback_data="admin_broadcast")],
-        [InlineKeyboardButton(text="◀️ Назад", callback_data="back")]
-    ])
-    
-    await callback.message.edit_text(
+    await message.answer(
         f"⚙️ <b>АДМИН-ПАНЕЛЬ</b>\n"
         f"━━━━━━━━━━━━━━━\n"
         f"👥 Пользователей: <b>{total_users}</b>\n"
         f"📸 Оценок: <b>{total_ratings}</b>\n"
         f"⚔️ Батлов: <b>{total_battles}</b>\n"
         f"━━━━━━━━━━━━━━━\n"
-        f"🎫 <b>Активные промокоды:</b>\n{codes_text}",
-        reply_markup=kb
-    )
-    await callback.answer()
-
-@dp.callback_query(F.data == "admin_stats")
-async def admin_stats_callback(callback: types.CallbackQuery):
-    total_users, total_ratings, total_battles = get_stats()
-    
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("SELECT username, total_ratings FROM users WHERE role != 'owner' ORDER BY total_ratings DESC LIMIT 10")
-    top = c.fetchall()
-    conn.close()
-    
-    top_text = "\n".join([f"{i+1}. @{u[0] or 'anon'} — {u[1]} оценок" for i, u in enumerate(top)])
-    if not top_text:
-        top_text = "Нет данных"
-    
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="◀️ Назад", callback_data="admin")]
-    ])
-    
-    await callback.message.edit_text(
-        f"📊 <b>ПОЛНАЯ СТАТИСТИКА</b>\n"
+        f"🎫 <b>Активные промокоды:</b>\n{codes_text}\n"
         f"━━━━━━━━━━━━━━━\n"
-        f"👥 Пользователей: <b>{total_users}</b>\n"
-        f"📸 Оценок: <b>{total_ratings}</b>\n"
-        f"⚔️ Батлов: <b>{total_battles}</b>\n"
-        f"━━━━━━━━━━━━━━━\n"
-        f"🏆 <b>ТОП-10:</b>\n{top_text}",
-        reply_markup=kb
+        f"<i>Создай промокод: /promo КОД КОЛИЧЕСТВО</i>"
     )
-    await callback.answer()
-
-@dp.callback_query(F.data == "admin_promo")
-async def admin_promo_callback(callback: types.CallbackQuery):
-    await callback.message.answer(
-        "🎫 <b>СОЗДАНИЕ ПРОМОКОДА</b>\n"
-        "━━━━━━━━━━━━━━━\n"
-        "Используй команду:\n"
-        "<code>/promo КОД КОЛИЧЕСТВО</code>\n\n"
-        "Пример:\n"
-        "<code>/promo SUMMER 5</code>\n"
-        "→ даст 5 бесплатных оценок\n\n"
-        "⚠️ Промокод будет <b>бесконечным</b>"
-    )
-    await callback.answer()
-
-@dp.callback_query(F.data == "admin_broadcast")
-async def admin_broadcast_callback(callback: types.CallbackQuery):
-    await callback.message.answer("📢 <b>РАССЫЛКА</b>\n\nОтправь сообщение для рассылки всем пользователям")
-    await callback.answer()
-
-@dp.message(F.text)
-async def handle_broadcast(message: types.Message):
-    user = get_user(message.from_user.id)
-    if not user or user[4] != 'owner':
-        return
-    if not message.text.startswith("/") and not message.text.startswith("❌"):
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-        c.execute("SELECT tg_id FROM users WHERE tg_id != ?", (message.from_user.id,))
-        users = c.fetchall()
-        conn.close()
-        sent = 0
-        for u in users:
-            try:
-                await bot.send_message(u[0], f"📢 <b>ОБЪЯВЛЕНИЕ</b>\n━━━━━━━━━━━━━━━\n\n{message.text}")
-                sent += 1
-                await asyncio.sleep(0.1)
-            except:
-                pass
-        await message.answer(f"✅ Рассылка отправлена <b>{sent}</b> пользователям")
 
 # ==================== ЗАПУСК ====================
 async def main():
     init_db()
-    await set_commands()
     print("🚀 Бот запущен!")
     print(f"👑 Владелец: {ADMIN_ID}")
     print(f"📢 Канал: {CHANNEL_ID}")
