@@ -269,18 +269,70 @@ def get_top_users(limit=10):
     conn.close()
     return top
 
-# ==================== АНАЛИЗ ФОТО ====================
+# ==================== АНАЛИЗ ФОТО (ИСПРАВЛЕННЫЙ) ====================
 def analyze_photo(image_data):
     try:
+        # Пытаемся открыть изображение
         img = Image.open(io.BytesIO(image_data))
+        
+        # Приводим к RGB
         if img.mode == 'RGBA':
             img = img.convert('RGB')
-        img.thumbnail((800, 800), Image.Resampling.LANCZOS)
-        brightness = ImageStat.Stat(img).mean[0]
-        contrast = ImageStat.Stat(img).std[0]
-        random.seed(int(brightness * 100))
+        elif img.mode != 'RGB':
+            img = img.convert('RGB')
         
-        face_score = round(random.uniform(3.5, 8.5), 1)
+        # Уменьшаем для ускорения
+        img.thumbnail((600, 600), Image.Resampling.LANCZOS)
+        
+        # Получаем яркость и контраст
+        stat = ImageStat.Stat(img)
+        brightness = stat.mean[0] if stat.mean else 128
+        contrast = stat.std[0] if stat.std else 30
+        
+        # Генерируем скор на основе параметров фото
+        random.seed(int(brightness * 100 + contrast))
+        base_score = 3.0 + (brightness / 255) * 3.0 + (contrast / 100) * 1.5
+        face_score = round(min(max(base_score, 2.5), 9.0), 1)
+        potential_score = round(min(max(2.0 + (contrast / 100) * 4.0, 2.0), 9.0), 1)
+        
+        # Вердикт
+        if face_score >= 8.0:
+            verdict = "True Adam"
+        elif face_score >= 7.0:
+            verdict = "Chad"
+        elif face_score >= 6.0:
+            verdict = "Chadlite"
+        elif face_score >= 5.5:
+            verdict = "HTN"
+        elif face_score >= 4.5:
+            verdict = "MTN"
+        elif face_score >= 3.5:
+            verdict = "LTN"
+        else:
+            verdict = "Sub5"
+        
+        # Рекомендации
+        if potential_score > 7:
+            improvements = "🔥 Огромный потенциал! Работай над массой/осанкой."
+        elif potential_score > 5:
+            improvements = "💪 Хороший потенциал. Смени причёску/стиль."
+        else:
+            improvements = "📈 Работай над кожей/формой лица."
+        
+        return {
+            "verdict": verdict,
+            "face_score": face_score,
+            "potential_score": potential_score,
+            "observation": f"⭐ Яркость: {int(brightness)}/255, Контраст: {int(contrast)}",
+            "strengths": "✅ Отличное фото" if brightness > 150 else "📷 Хорошее фото",
+            "improvements": improvements,
+            "confidence": "🔥 Высокая" if brightness > 120 and contrast > 40 else "📊 Средняя"
+        }
+    except Exception as e:
+        # Запасной вариант при ошибке
+        print(f"Ошибка анализа фото: {e}")
+        random.seed(datetime.now().microsecond)
+        face_score = round(random.uniform(3.0, 8.0), 1)
         potential_score = round(random.uniform(2.0, 9.0), 1)
         
         if face_score >= 8.0:
@@ -298,31 +350,14 @@ def analyze_photo(image_data):
         else:
             verdict = "Sub5"
         
-        if potential_score > 7:
-            improvements = "🔥 Огромный потенциал! Работай над массой/осанкой."
-        elif potential_score > 5:
-            improvements = "💪 Хороший потенциал. Смени причёску/стиль."
-        else:
-            improvements = "📈 Работай над кожей/формой лица."
-        
         return {
             "verdict": verdict,
             "face_score": face_score,
             "potential_score": potential_score,
-            "observation": f"⭐ Яркость: {int(brightness)}/255, Контраст: {int(contrast)}",
-            "strengths": "✅ Отличное фото" if brightness > 150 else "📷 Хорошее фото",
-            "improvements": improvements,
-            "confidence": "🔥 Высокая" if brightness > 120 else "📊 Средняя"
-        }
-    except Exception as e:
-        return {
-            "verdict": "❌ Ошибка",
-            "face_score": 0,
-            "potential_score": 0,
-            "observation": f"Не удалось обработать фото: {str(e)}",
+            "observation": "⚠️ Обработано запасным алгоритмом (не удалось распознать фото)",
             "strengths": "—",
-            "improvements": "—",
-            "confidence": "Низкая"
+            "improvements": "Попробуй другое фото или улучши освещение",
+            "confidence": "Средняя"
         }
 
 # ==================== КЛАВИАТУРА ====================
@@ -443,8 +478,8 @@ async def handle_photo(message: types.Message):
     
     photo = message.photo[-1]
     file = await bot.get_file(photo.file_id)
-    image_data = await bot.download_file(file.file_path)
-    image_bytes = image_data.getvalue()
+    downloaded_file = await bot.download_file(file.file_path)
+    image_bytes = downloaded_file.getvalue()
     
     result = analyze_photo(image_bytes)
     photo_id = str(photo.file_id)
@@ -515,8 +550,8 @@ async def handle_battle_photo(message: types.Message):
     
     photo = message.photo[-1]
     file = await bot.get_file(photo.file_id)
-    image_data = await bot.download_file(file.file_path)
-    image_bytes = image_data.getvalue()
+    downloaded_file = await bot.download_file(file.file_path)
+    image_bytes = downloaded_file.getvalue()
     user_photos_battle[user_id].append(image_bytes)
     
     if len(user_photos_battle[user_id]) == 1:
@@ -607,84 +642,81 @@ async def anthropometry_button(message: types.Message):
         f"Пример: <code>180 75 25 male</code>"
     )
 
-@dp.message(F.text)
-async def handle_text(message: types.Message):
+@dp.message(F.text.regexp(r'^\d+\s+\d+\s+\d+\s+(male|female)$'))
+async def handle_anthropometry_input(message: types.Message):
     user = get_user(message.from_user.id)
     if not user:
         return
     
-    text = message.text.strip()
+    parts = message.text.split()
+    height = int(parts[0])
+    weight = int(parts[1])
+    age = int(parts[2])
+    gender = parts[3].lower()
     
-    # ---- ОБРАБОТКА АНТРОПОМЕТРИИ ----
-    parts = text.split()
-    if len(parts) == 4 and parts[0].isdigit() and parts[1].isdigit() and parts[2].isdigit():
-        try:
-            height = int(parts[0])
-            weight = int(parts[1])
-            age = int(parts[2])
-            gender = parts[3].lower()
-            if gender not in ['male', 'female']:
-                await message.answer("❌ Пол: male или female")
-                return
-            if not (50 <= height <= 250):
-                await message.answer("❌ Рост 50-250 см")
-                return
-            if not (20 <= weight <= 300):
-                await message.answer("❌ Вес 20-300 кг")
-                return
-            if not (10 <= age <= 100):
-                await message.answer("❌ Возраст 10-100 лет")
-                return
-            
-            bmi = update_user_stats(message.from_user.id, height, weight, age, gender)
-            ideal_weight = 22 * ((height/100) ** 2)
-            diff = weight - ideal_weight
-            
-            await message.answer(
-                f"✅ <b>ДАННЫЕ СОХРАНЕНЫ!</b>\n"
-                f"━━━━━━━━━━━━━━━\n"
-                f"📏 Рост: {height} см\n"
-                f"⚖️ Вес: {weight} кг\n"
-                f"🎂 Возраст: {age} лет\n"
-                f"⚤ Пол: {'Мужской' if gender == 'male' else 'Женский'}\n"
-                f"━━━━━━━━━━━━━━━\n"
-                f"🧮 <b>ИМТ:</b> {bmi:.1f}\n"
-                f"💡 <b>Идеальный вес:</b> {ideal_weight:.1f} кг\n"
-                f"📊 <b>Отклонение:</b> {diff:+.1f} кг\n"
-                f"━━━━━━━━━━━━━━━\n"
-                f"<i>ИМТ 18.5-24.9 — норма</i>"
-            )
-            return
-        except:
-            await message.answer("❌ Ошибка! Используй: <code>180 75 25 male</code>")
-            return
+    if not (50 <= height <= 250):
+        await message.answer("❌ Рост 50-250 см")
+        return
+    if not (20 <= weight <= 300):
+        await message.answer("❌ Вес 20-300 кг")
+        return
+    if not (10 <= age <= 100):
+        await message.answer("❌ Возраст 10-100 лет")
+        return
     
-    # ---- СОЗДАНИЕ ПРОМОКОДА (для админа) ----
-    if user[4] == "owner" and text.startswith("/promo"):
-        parts = text.split()
-        if len(parts) == 3:
-            try:
-                code = parts[1].upper()
-                free = int(parts[2])
-                create_promo_code(code, free, 999999)
-                await message.answer(f"✅ <b>Промокод создан!</b>\n\n"
-                                    f"🎫 Код: <code>{code}</code>\n"
-                                    f"⭐ Бесплатных оценок: {free}\n"
-                                    f"📊 Использований: <b>∞</b>")
-                return
-            except:
-                await message.answer("❌ Ошибка! Используй: <code>/promo КОД КОЛИЧЕСТВО</code>")
-                return
-        else:
-            await message.answer("❌ Используй: <code>/promo КОД КОЛИЧЕСТВО</code>")
-            return
+    bmi = update_user_stats(message.from_user.id, height, weight, age, gender)
+    ideal_weight = 22 * ((height/100) ** 2)
+    diff = weight - ideal_weight
     
-    # ---- АКТИВАЦИЯ ПРОМОКОДА ----
-    if not text.startswith("/"):
-        success, msg = use_promo_code(text.upper(), message.from_user.id)
-        if success:
-            await message.answer(msg)
-            await show_menu(message)
+    await message.answer(
+        f"✅ <b>ДАННЫЕ СОХРАНЕНЫ!</b>\n"
+        f"━━━━━━━━━━━━━━━\n"
+        f"📏 Рост: {height} см\n"
+        f"⚖️ Вес: {weight} кг\n"
+        f"🎂 Возраст: {age} лет\n"
+        f"⚤ Пол: {'Мужской' if gender == 'male' else 'Женский'}\n"
+        f"━━━━━━━━━━━━━━━\n"
+        f"🧮 <b>ИМТ:</b> {bmi:.1f}\n"
+        f"💡 <b>Идеальный вес:</b> {ideal_weight:.1f} кг\n"
+        f"📊 <b>Отклонение:</b> {diff:+.1f} кг\n"
+        f"━━━━━━━━━━━━━━━\n"
+        f"<i>ИМТ 18.5-24.9 — норма</i>"
+    )
+
+# ==================== ПРОМОКОД ====================
+@dp.message(F.text == "🎫 Промокод")
+async def promo_button(message: types.Message):
+    await message.answer("🎫 <b>Введите промокод</b>\n\nПример: <code>SUMMER2024</code>")
+
+@dp.message(F.text.regexp(r'^[A-Z0-9]+$'))
+async def handle_promo_input(message: types.Message):
+    user = get_user(message.from_user.id)
+    if not user:
+        return
+    
+    if message.text.startswith('/'):
+        return
+    
+    success, msg = use_promo_code(message.text.upper(), message.from_user.id)
+    await message.answer(msg)
+    if success:
+        await show_menu(message)
+
+@dp.message(F.text.regexp(r'^/promo\s+[A-Z0-9]+\s+\d+$'))
+async def create_promo_command(message: types.Message):
+    user = get_user(message.from_user.id)
+    if user[4] != "owner":
+        await message.answer("⛔ Только для владельца!")
+        return
+    
+    parts = message.text.split()
+    code = parts[1].upper()
+    free = int(parts[2])
+    create_promo_code(code, free, 999999)
+    await message.answer(f"✅ <b>Промокод создан!</b>\n\n"
+                        f"🎫 Код: <code>{code}</code>\n"
+                        f"⭐ Бесплатных оценок: {free}\n"
+                        f"📊 Использований: <b>∞</b>")
 
 # ==================== ПОТЕНЦИАЛ ====================
 @dp.message(F.text == "📈 Мой потенциал")
@@ -844,6 +876,17 @@ async def admin_button(message: types.Message):
         f"━━━━━━━━━━━━━━━\n"
         f"<i>Создай промокод: /promo КОД КОЛИЧЕСТВО</i>"
     )
+
+# ==================== НЕИЗВЕСТНЫЕ СООБЩЕНИЯ ====================
+@dp.message()
+async def unknown_message(message: types.Message):
+    if message.text and not message.text.startswith('/'):
+        await message.answer(
+            "❓ <b>Неизвестная команда</b>\n\n"
+            "Используй <b>кнопки</b> на панели внизу экрана.\n"
+            "Если их нет — нажми /start",
+            reply_markup=get_main_keyboard(get_user(message.from_user.id)[4] if get_user(message.from_user.id) else "user")
+        )
 
 # ==================== ЗАПУСК ====================
 async def main():
