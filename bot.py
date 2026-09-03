@@ -2,6 +2,7 @@ import asyncio
 import sqlite3
 import io
 import random
+import math
 from datetime import datetime, timedelta
 from PIL import Image, ImageStat
 from aiogram import Bot, Dispatcher, types, F
@@ -34,7 +35,12 @@ def init_db():
         daily_battles INTEGER DEFAULT 0,
         last_reset DATE,
         total_ratings INTEGER DEFAULT 0,
-        total_battles INTEGER DEFAULT 0
+        total_battles INTEGER DEFAULT 0,
+        height INTEGER DEFAULT 0,
+        weight INTEGER DEFAULT 0,
+        age INTEGER DEFAULT 0,
+        gender TEXT DEFAULT 'male',
+        bmi REAL DEFAULT 0
     )''')
     c.execute('''CREATE TABLE IF NOT EXISTS promo_codes (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -48,21 +54,12 @@ def init_db():
         user_id INTEGER,
         photo_id TEXT,
         verdict TEXT,
+        face_score REAL,
+        potential_score REAL,
         observation TEXT,
         strengths TEXT,
         improvements TEXT,
         confidence TEXT,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    )''')
-    c.execute('''CREATE TABLE IF NOT EXISTS battles (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id INTEGER,
-        photo1_id TEXT,
-        photo2_id TEXT,
-        verdict1 TEXT,
-        verdict2 TEXT,
-        winner TEXT,
-        reason TEXT,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )''')
     conn.commit()
@@ -108,6 +105,16 @@ def check_daily_bonus(tg_id):
         conn.commit()
     conn.close()
 
+def update_user_stats(tg_id, height, weight, age, gender):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    bmi = weight / ((height/100) ** 2) if height > 0 and weight > 0 else 0
+    c.execute('''UPDATE users SET height = ?, weight = ?, age = ?, gender = ?, bmi = ? 
+                 WHERE tg_id = ?''', (height, weight, age, gender, bmi, tg_id))
+    conn.commit()
+    conn.close()
+    return bmi
+
 def add_free_ratings(tg_id, amount):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
@@ -142,7 +149,7 @@ def can_rate(tg_id):
         return True, "ok"
     if sub == 'silver' and daily < 15:
         return True, "ok"
-    return False, f"❌ Бесплатные оценки закончились. Завтра получишь +1."
+    return False, "❌ Бесплатные оценки закончились. Завтра +1."
 
 def can_battle(tg_id):
     user = get_user(tg_id)
@@ -181,21 +188,12 @@ def use_free_rating(tg_id):
     conn.commit()
     conn.close()
 
-def save_rating(tg_id, photo_id, verdict, observation, strengths, improvements, confidence):
+def save_rating(tg_id, photo_id, verdict, face_score, potential_score, observation, strengths, improvements, confidence):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    c.execute('''INSERT INTO ratings (user_id, photo_id, verdict, observation, strengths, improvements, confidence) 
-                 VALUES (?, ?, ?, ?, ?, ?, ?)''', 
-              (tg_id, photo_id, verdict, observation, strengths, improvements, confidence))
-    conn.commit()
-    conn.close()
-
-def save_battle(tg_id, photo1_id, photo2_id, verdict1, verdict2, winner, reason):
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute('''INSERT INTO battles (user_id, photo1_id, photo2_id, verdict1, verdict2, winner, reason) 
-                 VALUES (?, ?, ?, ?, ?, ?, ?)''', 
-              (tg_id, photo1_id, photo2_id, verdict1, verdict2, winner, reason))
+    c.execute('''INSERT INTO ratings (user_id, photo_id, verdict, face_score, potential_score, observation, strengths, improvements, confidence) 
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)''', 
+              (tg_id, photo_id, verdict, face_score, potential_score, observation, strengths, improvements, confidence))
     conn.commit()
     conn.close()
 
@@ -252,27 +250,50 @@ def analyze_photo(image_data):
         contrast = ImageStat.Stat(img).std[0]
         random.seed(int(brightness * 100))
         
-        if brightness > 180 and contrast > 60:
-            verdict = random.choice(["Chad", "True Adam"])
-        elif brightness > 140:
-            verdict = random.choice(["HTN", "Chadlite"])
-        elif brightness > 100:
-            verdict = random.choice(["MTN", "HTN"])
-        elif brightness > 60:
-            verdict = random.choice(["LTN", "MTN"])
+        # Лицевой скор (0-10)
+        face_score = round(random.uniform(3.5, 8.5), 1)
+        
+        # Потенциал (0-10) — что можно улучшить
+        potential_score = round(random.uniform(2.0, 9.0), 1)
+        
+        # Вердикт
+        if face_score >= 8.0:
+            verdict = "True Adam"
+        elif face_score >= 7.0:
+            verdict = "Chad"
+        elif face_score >= 6.0:
+            verdict = "Chadlite"
+        elif face_score >= 5.5:
+            verdict = "HTN"
+        elif face_score >= 4.5:
+            verdict = "MTN"
+        elif face_score >= 3.5:
+            verdict = "LTN"
         else:
-            verdict = random.choice(["Sub5", "LTN"])
+            verdict = "Sub5"
+        
+        # Рекомендации по потенциалу
+        if potential_score > 7:
+            improvements = "🔥 Огромный потенциал! Работай над массой/осанкой."
+        elif potential_score > 5:
+            improvements = "💪 Хороший потенциал. Смени причёску/стиль."
+        else:
+            improvements = "📈 Работай над кожей/формой лица."
         
         return {
             "verdict": verdict,
+            "face_score": face_score,
+            "potential_score": potential_score,
             "observation": f"⭐ Яркость: {int(brightness)}/255, Контраст: {int(contrast)}",
             "strengths": "✅ Отличное фото" if brightness > 150 else "📷 Хорошее фото",
-            "improvements": "💡 Улучшите освещение" if brightness < 80 else "🔄 Можно другой ракурс",
+            "improvements": improvements,
             "confidence": "🔥 Высокая" if brightness > 120 else "📊 Средняя"
         }
     except:
         return {
             "verdict": "❌ Ошибка",
+            "face_score": 0,
+            "potential_score": 0,
             "observation": "Не удалось обработать фото",
             "strengths": "—",
             "improvements": "—",
@@ -283,10 +304,10 @@ def analyze_photo(image_data):
 def get_main_keyboard(role="user"):
     keyboard = [
         [KeyboardButton(text="📸 Оценить"), KeyboardButton(text="⚔️ Батл")],
-        [KeyboardButton(text="💎 Подписки"), KeyboardButton(text="🎫 Промокод")],
-        [KeyboardButton(text="📊 Статистика")]
+        [KeyboardButton(text="📊 Моя статистика"), KeyboardButton(text="💎 Подписки")],
+        [KeyboardButton(text="🎫 Промокод"), KeyboardButton(text="📏 Антропометрия")],
+        [KeyboardButton(text="🏆 Топ-10"), KeyboardButton(text="📈 Мой потенциал")]
     ]
-    # 👇 КНОПКА АДМИН-ПАНЕЛИ (только для владельца)
     if role == "owner":
         keyboard.append([KeyboardButton(text="⚙️ Админ-панель")])
     return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
@@ -350,7 +371,7 @@ async def show_menu(message):
         reply_markup=get_main_keyboard(role)
     )
 
-# ==================== КНОПКА "ОЦЕНИТЬ" ====================
+# ==================== ОЦЕНКА ФОТО ====================
 @dp.message(F.text == "📸 Оценить")
 async def rate_button(message: types.Message):
     user = get_user(message.from_user.id)
@@ -369,11 +390,10 @@ async def rate_button(message: types.Message):
     
     await message.answer(
         "📸 <b>Отправь фото для оценки</b>\n\n"
-        "Я оценю его по шкале Looksmaxxing",
+        "Я оценю: лицо, потенциал и дам рекомендации",
         reply_markup=get_main_keyboard(user[4])
     )
 
-# ==================== ОБРАБОТКА ФОТО ====================
 @dp.message(F.photo)
 async def handle_photo(message: types.Message):
     user = get_user(message.from_user.id)
@@ -402,6 +422,7 @@ async def handle_photo(message: types.Message):
     result = analyze_photo(image_bytes)
     photo_id = str(photo.file_id)
     save_rating(message.from_user.id, photo_id, result["verdict"], 
+               result["face_score"], result["potential_score"],
                result["observation"], result["strengths"], 
                result["improvements"], result["confidence"])
     
@@ -418,6 +439,8 @@ async def handle_photo(message: types.Message):
         f"📸 <b>РЕЗУЛЬТАТ ОЦЕНКИ</b>\n"
         f"━━━━━━━━━━━━━━━\n"
         f"🎯 <b>Вердикт:</b> <code>{result['verdict']}</code>\n"
+        f"⭐ <b>Скор лица:</b> {result['face_score']}/10\n"
+        f"🚀 <b>Потенциал:</b> {result['potential_score']}/10\n"
         f"━━━━━━━━━━━━━━━\n"
         f"👀 {result['observation']}\n"
         f"✅ {result['strengths']}\n"
@@ -483,29 +506,211 @@ async def handle_battle_photo(message: types.Message):
         
         if score1 > score2:
             winner = "🏆 <b>Фото 1</b>"
-            reason = f"{result1['verdict']} > {result2['verdict']}"
+            reason = f"Скор {result1['face_score']} > {result2['face_score']}"
         elif score2 > score1:
             winner = "🏆 <b>Фото 2</b>"
-            reason = f"{result2['verdict']} > {result1['verdict']}"
+            reason = f"Скор {result2['face_score']} > {result1['face_score']}"
         else:
             winner = "🤝 <b>Ничья</b>"
-            reason = "Одинаковые оценки!"
-        
-        save_battle(user_id, "photo1", "photo2", result1["verdict"], result2["verdict"], winner, reason)
-        increment_usage(user_id, "battle")
+            reason = "Одинаковые скоры!"
         
         del user_photos_battle[user_id]
         
         await message.answer(
             f"⚔️ <b>РЕЗУЛЬТАТ БАТЛА</b>\n"
             f"━━━━━━━━━━━━━━━\n"
-            f"📸 Фото 1: <code>{result1['verdict']}</code>\n"
-            f"📸 Фото 2: <code>{result2['verdict']}</code>\n"
+            f"📸 Фото 1: <code>{result1['verdict']}</code> ({result1['face_score']}/10)\n"
+            f"📸 Фото 2: <code>{result2['verdict']}</code> ({result2['face_score']}/10)\n"
             f"━━━━━━━━━━━━━━━\n"
             f"{winner}\n"
             f"💬 {reason}",
             reply_markup=get_main_keyboard(user[4])
         )
+
+# ==================== СТАТИСТИКА ====================
+@dp.message(F.text == "📊 Моя статистика")
+async def stats_button(message: types.Message):
+    user = get_user(message.from_user.id)
+    if not user:
+        return
+    
+    check_daily_bonus(message.from_user.id)
+    user = get_user(message.from_user.id)
+    
+    await message.answer(
+        f"📊 <b>МОЯ СТАТИСТИКА</b>\n"
+        f"━━━━━━━━━━━━━━━\n"
+        f"⭐ Бесплатно: <b>{user[7]}</b> (+1 каждый день)\n"
+        f"📅 Подписка: <b>{user[5].upper() if user[5] != 'none' else 'Нет'}</b>\n"
+        f"📸 Оценок всего: <b>{user[10]}</b>\n"
+        f"⚔️ Батлов всего: <b>{user[11]}</b>\n"
+        f"━━━━━━━━━━━━━━━\n"
+        f"📈 Оценок сегодня: <b>{user[8]}/15</b>\n"
+        f"⚔️ Батлов сегодня: <b>{user[9]}/3</b>"
+    )
+
+# ==================== АНТРОПОМЕТРИЯ (ИМТ + РОСТ + ВЕС) ====================
+@dp.message(F.text == "📏 Антропометрия")
+async def anthropometry_button(message: types.Message):
+    user = get_user(message.from_user.id)
+    if not user:
+        return
+    
+    height = user[12] or 0
+    weight = user[13] or 0
+    age = user[14] or 0
+    gender = user[15] or "male"
+    bmi = user[16] or 0
+    
+    status = "🏋️ Норма" if 18.5 <= bmi <= 24.9 else "⚠️ Отклонение"
+    
+    await message.answer(
+        f"📏 <b>АНТРОПОМЕТРИЯ</b>\n"
+        f"━━━━━━━━━━━━━━━\n"
+        f"📏 Рост: <b>{height} см</b>\n"
+        f"⚖️ Вес: <b>{weight} кг</b>\n"
+        f"🎂 Возраст: <b>{age} лет</b>\n"
+        f"⚤ Пол: <b>{'Мужской' if gender == 'male' else 'Женский'}</b>\n"
+        f"━━━━━━━━━━━━━━━\n"
+        f"🧮 <b>ИМТ:</b> {bmi:.1f} — {status}\n"
+        f"━━━━━━━━━━━━━━━\n"
+        f"<i>Отправь: рост вес возраст пол</i>\n"
+        f"Пример: <code>180 75 25 male</code>"
+    )
+
+@dp.message(F.text)
+async def handle_anthropometry(message: types.Message):
+    user = get_user(message.from_user.id)
+    if not user:
+        return
+    
+    parts = message.text.split()
+    if len(parts) == 4 and parts[0].isdigit() and parts[1].isdigit() and parts[2].isdigit():
+        try:
+            height = int(parts[0])
+            weight = int(parts[1])
+            age = int(parts[2])
+            gender = parts[3].lower()
+            if gender not in ['male', 'female']:
+                await message.answer("❌ Пол: male или female")
+                return
+            if not (50 <= height <= 250):
+                await message.answer("❌ Рост 50-250 см")
+                return
+            if not (20 <= weight <= 300):
+                await message.answer("❌ Вес 20-300 кг")
+                return
+            if not (10 <= age <= 100):
+                await message.answer("❌ Возраст 10-100 лет")
+                return
+            
+            bmi = update_user_stats(message.from_user.id, height, weight, age, gender)
+            
+            # Расчёт идеального веса
+            ideal_weight = 22 * ((height/100) ** 2)
+            diff = weight - ideal_weight
+            
+            await message.answer(
+                f"✅ <b>ДАННЫЕ СОХРАНЕНЫ!</b>\n"
+                f"━━━━━━━━━━━━━━━\n"
+                f"📏 Рост: {height} см\n"
+                f"⚖️ Вес: {weight} кг\n"
+                f"🎂 Возраст: {age} лет\n"
+                f"⚤ Пол: {'Мужской' if gender == 'male' else 'Женский'}\n"
+                f"━━━━━━━━━━━━━━━\n"
+                f"🧮 <b>ИМТ:</b> {bmi:.1f}\n"
+                f"💡 <b>Идеальный вес:</b> {ideal_weight:.1f} кг\n"
+                f"📊 <b>Отклонение:</b> {diff:+.1f} кг\n"
+                f"━━━━━━━━━━━━━━━\n"
+                f"<i>ИМТ 18.5-24.9 — норма</i>"
+            )
+        except:
+            await message.answer("❌ Ошибка! Используй: <code>180 75 25 male</code>")
+        return
+    
+    # Обработка промокодов
+    if user[4] == "owner" and message.text.startswith("/promo"):
+        parts = message.text.split()
+        if len(parts) == 3:
+            try:
+                code = parts[1].upper()
+                free = int(parts[2])
+                create_promo_code(code, free, 999999)
+                await message.answer(f"✅ <b>Промокод создан!</b>\n\n"
+                                    f"🎫 Код: <code>{code}</code>\n"
+                                    f"⭐ Бесплатных оценок: {free}\n"
+                                    f"📊 Использований: <b>∞</b>")
+                return
+            except:
+                await message.answer("❌ Ошибка! Используй: <code>/promo КОД КОЛИЧЕСТВО</code>")
+                return
+        else:
+            await message.answer("❌ Используй: <code>/promo КОД КОЛИЧЕСТВО</code>")
+            return
+    
+    # Активация промокода
+    if not message.text.startswith("/"):
+        success, msg = use_promo_code(message.text.upper(), message.from_user.id)
+        if success:
+            await message.answer(msg)
+            await show_menu(message)
+
+# ==================== ПОТЕНЦИАЛ ====================
+@dp.message(F.text == "📈 Мой потенциал")
+async def potential_button(message: types.Message):
+    user = get_user(message.from_user.id)
+    if not user:
+        return
+    
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT verdict, face_score, potential_score FROM ratings WHERE user_id = ? ORDER BY id DESC LIMIT 1", (message.from_user.id,))
+    last = c.fetchone()
+    conn.close()
+    
+    if not last:
+        await message.answer("📈 <b>ПОТЕНЦИАЛ</b>\n\nСначала оцени хотя бы одно фото!")
+        return
+    
+    verdict, face_score, potential = last
+    
+    if potential > 7:
+        advice = "🔥 Огромный потенциал! Работай над массой и осанкой. Ты можешь стать Chad!"
+    elif potential > 5:
+        advice = "💪 Хороший потенциал. Смени причёску, работай над стилем и кожей."
+    else:
+        advice = "📈 Работай над базой: кожа, причёска, улыбка. Не сдавайся!"
+    
+    await message.answer(
+        f"📈 <b>ТВОЙ ПОТЕНЦИАЛ</b>\n"
+        f"━━━━━━━━━━━━━━━\n"
+        f"🎯 Текущий вердикт: <code>{verdict}</code>\n"
+        f"⭐ Скор лица: {face_score}/10\n"
+        f"🚀 Потенциал: {potential}/10\n"
+        f"━━━━━━━━━━━━━━━\n"
+        f"💡 <b>Рекомендация:</b>\n{advice}"
+    )
+
+# ==================== ТОП-10 ====================
+@dp.message(F.text == "🏆 Топ-10")
+async def top_button(message: types.Message):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute('''SELECT username, total_ratings, total_battles 
+                 FROM users WHERE role != 'owner' 
+                 ORDER BY total_ratings DESC LIMIT 10''')
+    top = c.fetchall()
+    conn.close()
+    
+    if not top:
+        await message.answer("🏆 <b>ТОП-10</b>\n\nНет данных. Будь первым!")
+        return
+    
+    text = "🏆 <b>ТОП-10 ПОЛЬЗОВАТЕЛЕЙ</b>\n━━━━━━━━━━━━━━━\n"
+    for i, (username, ratings, battles) in enumerate(top, 1):
+        text += f"{i}. @{username or 'anon'} — {ratings} оценок, {battles} батлов\n"
+    
+    await message.answer(text)
 
 # ==================== ПОДПИСКИ ====================
 @dp.message(F.text == "💎 Подписки")
@@ -585,103 +790,4 @@ async def payment_handler(message: types.Message):
         plan = payload.split("_")[1]
         days = {"bronze": 30, "silver": 30, "gold": 30}
         set_subscription(message.from_user.id, plan, days[plan])
-        await message.answer(f"✅ Подписка <b>{plan.capitalize()}</b> активирована на 30 дней!")
-    await show_menu(message)
-
-# ==================== ПРОМОКОД ====================
-@dp.message(F.text == "🎫 Промокод")
-async def promo_button(message: types.Message):
-    await message.answer("🎫 <b>Введите промокод</b>\n\nПример: <code>SUMMER2024</code>")
-
-@dp.message(F.text)
-async def handle_promo(message: types.Message):
-    if message.text.startswith("/"):
-        return
-    
-    user = get_user(message.from_user.id)
-    if not user:
-        return
-    
-    if user[4] == "owner" and message.text.startswith("/promo"):
-        parts = message.text.split()
-        if len(parts) == 3:
-            try:
-                code = parts[1].upper()
-                free = int(parts[2])
-                create_promo_code(code, free, 999999)
-                await message.answer(f"✅ <b>Промокод создан!</b>\n\n"
-                                    f"🎫 Код: <code>{code}</code>\n"
-                                    f"⭐ Бесплатных оценок: {free}\n"
-                                    f"📊 Использований: <b>∞</b>")
-                return
-            except:
-                await message.answer("❌ Ошибка! Используй: <code>/promo КОД КОЛИЧЕСТВО</code>")
-                return
-        else:
-            await message.answer("❌ Используй: <code>/promo КОД КОЛИЧЕСТВО</code>")
-            return
-    
-    success, msg = use_promo_code(message.text.upper(), message.from_user.id)
-    await message.answer(msg)
-    if success:
-        await show_menu(message)
-
-# ==================== СТАТИСТИКА ====================
-@dp.message(F.text == "📊 Статистика")
-async def stats_button(message: types.Message):
-    user = get_user(message.from_user.id)
-    if not user:
-        return
-    
-    check_daily_bonus(message.from_user.id)
-    user = get_user(message.from_user.id)
-    
-    await message.answer(
-        f"📊 <b>МОЯ СТАТИСТИКА</b>\n"
-        f"━━━━━━━━━━━━━━━\n"
-        f"⭐ Бесплатно: <b>{user[7]}</b> (+1 каждый день)\n"
-        f"📅 Подписка: <b>{user[5].upper() if user[5] != 'none' else 'Нет'}</b>\n"
-        f"📸 Оценок всего: <b>{user[10]}</b>\n"
-        f"⚔️ Батлов всего: <b>{user[11]}</b>\n"
-        f"━━━━━━━━━━━━━━━\n"
-        f"📈 Оценок сегодня: <b>{user[8]}/15</b>\n"
-        f"⚔️ Батлов сегодня: <b>{user[9]}/3</b>"
-    )
-
-# ==================== АДМИН-ПАНЕЛЬ (ВОЗВРАЩЕНА!) ====================
-@dp.message(F.text == "⚙️ Админ-панель")
-async def admin_button(message: types.Message):
-    user = get_user(message.from_user.id)
-    if user[4] != "owner":
-        await message.answer("⛔ Доступ запрещён!")
-        return
-    
-    total_users, total_ratings, total_battles = get_stats()
-    codes = get_all_promo_codes()
-    
-    codes_text = "\n".join([f"• <code>{c[0]}</code> — +{c[1]}⭐ (осталось {c[2]})" for c in codes[:5]])
-    if not codes_text:
-        codes_text = "Нет активных промокодов"
-    
-    await message.answer(
-        f"⚙️ <b>АДМИН-ПАНЕЛЬ</b>\n"
-        f"━━━━━━━━━━━━━━━\n"
-        f"👥 Пользователей: <b>{total_users}</b>\n"
-        f"📸 Оценок: <b>{total_ratings}</b>\n"
-        f"⚔️ Батлов: <b>{total_battles}</b>\n"
-        f"━━━━━━━━━━━━━━━\n"
-        f"🎫 <b>Активные промокоды:</b>\n{codes_text}\n"
-        f"━━━━━━━━━━━━━━━\n"
-        f"<i>Создай промокод: /promo КОД КОЛИЧЕСТВО</i>"
-    )
-
-# ==================== ЗАПУСК ====================
-async def main():
-    init_db()
-    print("🚀 Бот запущен!")
-    print(f"👑 Владелец: {ADMIN_ID}")
-    print(f"📢 Канал: {CHANNEL_ID}")
-    await dp.start_polling(bot)
-
-if __name__ == "__main__":
-    asyncio.run(main())
+        await message.answer
