@@ -5,7 +5,7 @@ import random
 from datetime import datetime, timedelta
 from PIL import Image, ImageStat
 from aiogram import Bot, Dispatcher, types, F
-from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, BotCommand, BotCommandScopeDefault
+from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 from aiogram.filters import Command
 from aiogram.enums import ParseMode
 from aiogram.client.default import DefaultBotProperties
@@ -29,7 +29,7 @@ def init_db():
         role TEXT DEFAULT 'user',
         subscription TEXT DEFAULT 'none',
         sub_expires TEXT,
-        free_ratings INTEGER DEFAULT 0,
+        free_ratings INTEGER DEFAULT 1,
         daily_ratings INTEGER DEFAULT 0,
         daily_battles INTEGER DEFAULT 0,
         last_reset DATE,
@@ -54,6 +54,17 @@ def init_db():
         confidence TEXT,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )''')
+    c.execute('''CREATE TABLE IF NOT EXISTS battles (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER,
+        photo1_id TEXT,
+        photo2_id TEXT,
+        verdict1 TEXT,
+        verdict2 TEXT,
+        winner TEXT,
+        reason TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )''')
     conn.commit()
     conn.close()
 
@@ -68,6 +79,7 @@ def get_user(tg_id):
 def get_or_create_user(tg_id, username, first_name):
     user = get_user(tg_id)
     if user:
+        check_daily_bonus(tg_id)
         return user
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
@@ -75,11 +87,26 @@ def get_or_create_user(tg_id, username, first_name):
     owner_exists = c.fetchone()[0]
     role = 'owner' if owner_exists == 0 else 'user'
     today = datetime.now().date().isoformat()
-    c.execute('''INSERT INTO users (tg_id, username, first_name, role, last_reset) 
-                 VALUES (?, ?, ?, ?, ?)''', (tg_id, username, first_name, role, today))
+    c.execute('''INSERT INTO users (tg_id, username, first_name, role, last_reset, free_ratings) 
+                 VALUES (?, ?, ?, ?, ?, ?)''', (tg_id, username, first_name, role, today, 1))
     conn.commit()
     conn.close()
     return get_user(tg_id)
+
+def check_daily_bonus(tg_id):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT last_reset, free_ratings FROM users WHERE tg_id = ?", (tg_id,))
+    result = c.fetchone()
+    if not result:
+        conn.close()
+        return
+    last_reset, free = result
+    today = datetime.now().date().isoformat()
+    if last_reset != today:
+        c.execute("UPDATE users SET free_ratings = free_ratings + 1, last_reset = ? WHERE tg_id = ?", (today, tg_id))
+        conn.commit()
+    conn.close()
 
 def add_free_ratings(tg_id, amount):
     conn = sqlite3.connect(DB_PATH)
@@ -102,6 +129,8 @@ def can_rate(tg_id):
         return False, "Пользователь не найден"
     if user[4] == 'owner':
         return True, "owner"
+    check_daily_bonus(tg_id)
+    user = get_user(tg_id)
     free = user[7]
     sub = user[5]
     daily = user[8]
@@ -113,7 +142,7 @@ def can_rate(tg_id):
         return True, "ok"
     if sub == 'silver' and daily < 15:
         return True, "ok"
-    return False, "❌ Нет бесплатных оценок или подписки"
+    return False, f"❌ Бесплатные оценки закончились. Завтра получишь +1."
 
 def can_battle(tg_id):
     user = get_user(tg_id)
@@ -250,13 +279,14 @@ def analyze_photo(image_data):
             "confidence": "Низкая"
         }
 
-# ==================== ПОСТОЯННАЯ КЛАВИАТУРА (НИЖНЯЯ ПАНЕЛЬ) ====================
+# ==================== ПОСТОЯННАЯ КЛАВИАТУРА ====================
 def get_main_keyboard(role="user"):
     keyboard = [
         [KeyboardButton(text="📸 Оценить"), KeyboardButton(text="⚔️ Батл")],
         [KeyboardButton(text="💎 Подписки"), KeyboardButton(text="🎫 Промокод")],
         [KeyboardButton(text="📊 Статистика")]
     ]
+    # 👇 КНОПКА АДМИН-ПАНЕЛИ (только для владельца)
     if role == "owner":
         keyboard.append([KeyboardButton(text="⚙️ Админ-панель")])
     return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
@@ -264,8 +294,6 @@ def get_main_keyboard(role="user"):
 # ==================== БОТ ====================
 bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher()
-
-# Хранилище для батлов
 user_photos_battle = {}
 
 # ==================== ПРОВЕРКА ПОДПИСКИ ====================
@@ -305,6 +333,9 @@ async def show_menu(message):
     if not user:
         return
     
+    check_daily_bonus(message.from_user.id)
+    user = get_user(message.from_user.id)
+    
     free = user[7]
     sub = user[5]
     role = user[4]
@@ -312,7 +343,7 @@ async def show_menu(message):
     await message.answer(
         f"🏠 <b>ГЛАВНОЕ МЕНЮ</b>\n"
         f"━━━━━━━━━━━━━━━\n"
-        f"⭐ Бесплатно: <b>{free}</b>\n"
+        f"⭐ Бесплатно: <b>{free}</b> (+1 каждый день)\n"
         f"📅 Подписка: <b>{sub.upper() if sub != 'none' else 'Нет'}</b>\n"
         f"━━━━━━━━━━━━━━━\n"
         f"👇 <i>Выбери действие на панели внизу</i>",
@@ -354,7 +385,6 @@ async def handle_photo(message: types.Message):
         await message.answer("❌ Подпишись на @KennyChadPSL")
         return
     
-    # Проверяем, не батл ли это
     if message.from_user.id in user_photos_battle:
         await handle_battle_photo(message)
         return
@@ -381,6 +411,9 @@ async def handle_photo(message: types.Message):
         else:
             increment_usage(message.from_user.id, "rate")
     
+    user = get_user(message.from_user.id)
+    free = user[7]
+    
     await message.answer(
         f"📸 <b>РЕЗУЛЬТАТ ОЦЕНКИ</b>\n"
         f"━━━━━━━━━━━━━━━\n"
@@ -389,7 +422,9 @@ async def handle_photo(message: types.Message):
         f"👀 {result['observation']}\n"
         f"✅ {result['strengths']}\n"
         f"📈 {result['improvements']}\n"
-        f"📊 <b>Уверенность:</b> {result['confidence']}",
+        f"📊 <b>Уверенность:</b> {result['confidence']}\n"
+        f"━━━━━━━━━━━━━━━\n"
+        f"⭐ Осталось: <b>{free}</b> бесплатных оценок",
         reply_markup=get_main_keyboard(user[4])
     )
 
@@ -457,9 +492,7 @@ async def handle_battle_photo(message: types.Message):
             reason = "Одинаковые оценки!"
         
         save_battle(user_id, "photo1", "photo2", result1["verdict"], result2["verdict"], winner, reason)
-        
-        if can != "owner":
-            increment_usage(user_id, "battle")
+        increment_usage(user_id, "battle")
         
         del user_photos_battle[user_id]
         
@@ -569,7 +602,6 @@ async def handle_promo(message: types.Message):
     if not user:
         return
     
-    # АДМИН: создание промокода /promo КОД КОЛИЧЕСТВО
     if user[4] == "owner" and message.text.startswith("/promo"):
         parts = message.text.split()
         if len(parts) == 3:
@@ -589,7 +621,6 @@ async def handle_promo(message: types.Message):
             await message.answer("❌ Используй: <code>/promo КОД КОЛИЧЕСТВО</code>")
             return
     
-    # Обычный пользователь: активация промокода
     success, msg = use_promo_code(message.text.upper(), message.from_user.id)
     await message.answer(msg)
     if success:
@@ -602,10 +633,13 @@ async def stats_button(message: types.Message):
     if not user:
         return
     
+    check_daily_bonus(message.from_user.id)
+    user = get_user(message.from_user.id)
+    
     await message.answer(
         f"📊 <b>МОЯ СТАТИСТИКА</b>\n"
         f"━━━━━━━━━━━━━━━\n"
-        f"⭐ Бесплатно: <b>{user[7]}</b>\n"
+        f"⭐ Бесплатно: <b>{user[7]}</b> (+1 каждый день)\n"
         f"📅 Подписка: <b>{user[5].upper() if user[5] != 'none' else 'Нет'}</b>\n"
         f"📸 Оценок всего: <b>{user[10]}</b>\n"
         f"⚔️ Батлов всего: <b>{user[11]}</b>\n"
@@ -614,7 +648,7 @@ async def stats_button(message: types.Message):
         f"⚔️ Батлов сегодня: <b>{user[9]}/3</b>"
     )
 
-# ==================== АДМИН-ПАНЕЛЬ ====================
+# ==================== АДМИН-ПАНЕЛЬ (ВОЗВРАЩЕНА!) ====================
 @dp.message(F.text == "⚙️ Админ-панель")
 async def admin_button(message: types.Message):
     user = get_user(message.from_user.id)
